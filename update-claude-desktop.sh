@@ -35,7 +35,8 @@ if [ -z "$LATEST_VERSION" ]; then
     exit 1
 fi
 
-BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude"
+APP_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude.app/Contents/MacOS/claude"
+STANDALONE_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude"
 echo "Found desktop claude-code version: $LATEST_VERSION"
 
 # Update npm package to latest
@@ -52,27 +53,35 @@ fi
 NPM_VERSION=$(node -e "console.log(require('$(npm root -g)/@anthropic-ai/claude-code/package.json').version)")
 echo "npm claude-code version: $NPM_VERSION"
 
-# Backup original binary if it's not already our wrapper
-if file "$BINARY_PATH" 2>/dev/null | grep -q "Mach-O"; then
-    echo "Backing up native binary to claude.bun.bak"
-    mv "$BINARY_PATH" "$BINARY_PATH.bun.bak"
-elif [ -f "$BINARY_PATH" ] && head -1 "$BINARY_PATH" | grep -q "^#!/bin/bash"; then
-    echo "Existing wrapper script found, replacing it."
-fi
+# Patch both the app bundle binary (used by desktop app) and the standalone binary
+for BINARY_PATH in "$APP_BINARY_PATH" "$STANDALONE_BINARY_PATH"; do
+    if [ ! -e "$BINARY_PATH" ] && [ ! -L "$BINARY_PATH" ]; then
+        echo "Skipping $BINARY_PATH (not found)"
+        continue
+    fi
 
-# Write the wrapper script
-cat > "$BINARY_PATH" << EOF
+    if file "$BINARY_PATH" 2>/dev/null | grep -q "Mach-O"; then
+        echo "Backing up native binary: $BINARY_PATH -> ${BINARY_PATH}.bun.bak"
+        mv "$BINARY_PATH" "${BINARY_PATH}.bun.bak"
+    elif head -1 "$BINARY_PATH" 2>/dev/null | grep -q "^#!/bin/bash"; then
+        echo "Existing wrapper found, replacing: $BINARY_PATH"
+    fi
+
+    cat > "$BINARY_PATH" << EOF
 #!/bin/bash
 export NVM_DIR="\$HOME/.nvm"
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
 exec node "$CLI_JS" "\$@"
 EOF
-chmod +x "$BINARY_PATH"
+    chmod +x "$BINARY_PATH"
+    echo "Patched: $BINARY_PATH"
+done
 
 echo ""
 echo "Done! Claude desktop app patched."
 echo "  Desktop version dir: $LATEST_VERSION"
 echo "  npm claude-code:     $NPM_VERSION"
-echo "  Wrapper:             $BINARY_PATH"
+echo "  App binary:          $APP_BINARY_PATH"
+echo "  Standalone binary:   $STANDALONE_BINARY_PATH"
 echo ""
 echo "Restart the Claude desktop app to apply."
