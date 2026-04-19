@@ -14,7 +14,9 @@ The Electron UI opens fine, but the app is unresponsive because its backend proc
 
 ## The Fix
 
-This script replaces the native Bun binary with a wrapper that runs the npm-distributed version of `@anthropic-ai/claude-code` via Node.js, which has no AVX2 requirement.
+This script replaces the native binary with a wrapper that runs the npm-distributed `cli.js` from the Claude agent SDK via Node.js, which avoids the AVX2-only native path on older Intel Macs.
+
+Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code`, so the script now reads the SDK version bundled by your installed Claude Desktop app and installs the matching `@anthropic-ai/claude-agent-sdk` version instead.
 
 ## Requirements
 
@@ -39,11 +41,12 @@ Re-run the script after the desktop app updates:
 
 ## What it does
 
-1. Updates `@anthropic-ai/claude-code` npm package to the latest version
-2. Finds the latest version directory the desktop app created
-3. Backs up the native Bun binary (if present)
-4. Replaces it with a shell wrapper that invokes the Node.js version
-5. Restart the Claude desktop app to apply
+1. Finds the latest version directory the desktop app created
+2. Reads the bundled `@anthropic-ai/claude-agent-sdk` version from your local Claude Desktop app
+3. Installs the matching SDK version via npm
+4. Backs up the native binary (if present)
+5. Replaces it with a shell wrapper that invokes `node .../cli.js`
+6. Restart the Claude desktop app to apply
 
 ## Affected hardware
 

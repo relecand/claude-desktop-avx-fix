@@ -1,14 +1,75 @@
 #!/bin/bash
 # update-claude-desktop.sh
-# Patches the Claude desktop app to use the npm (Node.js) version of claude-code
-# instead of the native Bun binary, which crashes on older Intel CPUs (pre-AVX2).
+# Patches the Claude desktop app to use the npm (Node.js) version of the
+# bundled Claude agent SDK CLI instead of the native binary, which crashes on
+# older Intel CPUs (pre-AVX2).
 #
 # Usage: ./update-claude-desktop.sh
 
-set -e
+set -euo pipefail
 
 CLAUDE_CODE_DIR="$HOME/Library/Application Support/Claude/claude-code"
 NVM_DIR="$HOME/.nvm"
+CLAUDE_APP_CANDIDATES=(
+    "/Applications/Claude.app"
+    "$HOME/Applications/Claude.app"
+)
+
+find_claude_app_asar() {
+    local app_path
+    local asar_path
+
+    for app_path in "${CLAUDE_APP_CANDIDATES[@]}"; do
+        asar_path="$app_path/Contents/Resources/app.asar"
+        if [ -f "$asar_path" ]; then
+            printf '%s\n' "$asar_path"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+read_agent_sdk_version_from_asar() {
+    local asar_path="$1"
+
+    node - "$asar_path" <<'NODE'
+const fs = require('fs')
+
+const asarPath = process.argv[2]
+const contents = fs.readFileSync(asarPath, 'utf8')
+const match = contents.match(/"@anthropic-ai\/claude-agent-sdk":\s*"([^"]+)"/)
+
+if (match) {
+  process.stdout.write(match[1])
+}
+NODE
+}
+
+infer_agent_sdk_version() {
+    local desktop_version="$1"
+    local build_number="${desktop_version##*.}"
+
+    if [[ "$build_number" =~ ^[0-9]+$ ]]; then
+        printf '0.2.%s\n' "$build_number"
+    fi
+}
+
+resolve_cli_js_path() {
+    local npm_root="$1"
+    local candidate
+
+    for candidate in \
+        "$npm_root/@anthropic-ai/claude-agent-sdk/cli.js" \
+        "$npm_root/@anthropic-ai/claude-code/cli.js"; do
+        if [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 # Load nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -39,19 +100,45 @@ APP_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude.app/Contents/MacOS/clau
 STANDALONE_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude"
 echo "Found desktop claude-code version: $LATEST_VERSION"
 
-# Update npm package to latest
-echo "Updating @anthropic-ai/claude-code via npm..."
-npm install -g @anthropic-ai/claude-code@latest
+CLAUDE_APP_ASAR=""
+if CLAUDE_APP_ASAR="$(find_claude_app_asar)"; then
+    echo "Found Claude Desktop app bundle: $CLAUDE_APP_ASAR"
+else
+    echo "Warning: Could not find Claude.app in /Applications or \$HOME/Applications."
+fi
+
+AGENT_SDK_VERSION=""
+if [ -n "$CLAUDE_APP_ASAR" ]; then
+    AGENT_SDK_VERSION="$(read_agent_sdk_version_from_asar "$CLAUDE_APP_ASAR" || true)"
+fi
+
+if [ -z "$AGENT_SDK_VERSION" ]; then
+    AGENT_SDK_VERSION="$(infer_agent_sdk_version "$LATEST_VERSION" || true)"
+    if [ -n "$AGENT_SDK_VERSION" ]; then
+        echo "Warning: Could not read bundled @anthropic-ai/claude-agent-sdk version from app.asar."
+        echo "         Falling back to inferred SDK version: $AGENT_SDK_VERSION"
+    else
+        echo "Error: Could not determine which @anthropic-ai/claude-agent-sdk version to install."
+        exit 1
+    fi
+else
+    echo "Bundled agent SDK version: $AGENT_SDK_VERSION"
+fi
+
+echo "Updating @anthropic-ai/claude-agent-sdk@$AGENT_SDK_VERSION via npm..."
+npm install -g "@anthropic-ai/claude-agent-sdk@$AGENT_SDK_VERSION"
+
+NPM_ROOT="$(npm root -g)"
 
 # Find the installed cli.js
-CLI_JS="$(npm root -g)/@anthropic-ai/claude-code/cli.js"
-if [ ! -f "$CLI_JS" ]; then
-    echo "Error: cli.js not found at $CLI_JS"
+CLI_JS="$(resolve_cli_js_path "$NPM_ROOT" || true)"
+if [ -z "$CLI_JS" ]; then
+    echo "Error: cli.js not found under $NPM_ROOT"
     exit 1
 fi
 
-NPM_VERSION=$(node -e "console.log(require('$(npm root -g)/@anthropic-ai/claude-code/package.json').version)")
-echo "npm claude-code version: $NPM_VERSION"
+NPM_VERSION=$(node -e "console.log(require(process.argv[1]).version)" "$NPM_ROOT/@anthropic-ai/claude-agent-sdk/package.json")
+echo "npm agent SDK version: $NPM_VERSION"
 
 # Patch both the app bundle binary (used by desktop app) and the standalone binary
 for BINARY_PATH in "$APP_BINARY_PATH" "$STANDALONE_BINARY_PATH"; do
@@ -80,7 +167,8 @@ done
 echo ""
 echo "Done! Claude desktop app patched."
 echo "  Desktop version dir: $LATEST_VERSION"
-echo "  npm claude-code:     $NPM_VERSION"
+echo "  npm agent SDK:       $NPM_VERSION"
+echo "  cli.js:              $CLI_JS"
 echo "  App binary:          $APP_BINARY_PATH"
 echo "  Standalone binary:   $STANDALONE_BINARY_PATH"
 echo ""
