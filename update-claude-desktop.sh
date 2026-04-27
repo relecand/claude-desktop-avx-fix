@@ -10,6 +10,7 @@ set -euo pipefail
 
 CLAUDE_CODE_DIR="$HOME/Library/Application Support/Claude/claude-code"
 NVM_DIR="$HOME/.nvm"
+LAST_KNOWN_CLI_SDK_VERSION="0.2.112"
 CLAUDE_APP_CANDIDATES=(
     "/Applications/Claude.app"
     "$HOME/Applications/Claude.app"
@@ -71,6 +72,80 @@ resolve_cli_js_path() {
     return 1
 }
 
+install_agent_sdk_version() {
+    local version="$1"
+
+    echo "Updating @anthropic-ai/claude-agent-sdk@$version via npm..."
+    npm install -g "@anthropic-ai/claude-agent-sdk@$version"
+}
+
+write_wrapper_script() {
+    local binary_path="$1"
+    local cli_js="$2"
+    local fallback_mode="$3"
+
+    cat > "$binary_path" <<EOF
+#!/bin/bash
+export NVM_DIR="\$HOME/.nvm"
+[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+
+CLI_JS="$cli_js"
+FALLBACK_MODE="$fallback_mode"
+
+if [ "\$FALLBACK_MODE" = "1" ]; then
+    filtered_args=()
+
+    # Newer Claude Desktop builds pass process-management flags that were added
+    # after the last JS CLI release. Drop them so the fallback CLI can still
+    # boot and speak stream-json to the desktop app.
+    while [ "\$#" -gt 0 ]; do
+        case "\$1" in
+            --assistant|--assistant=*)
+                shift
+                continue
+                ;;
+            --managed-settings)
+                shift
+                if [ "\$#" -gt 0 ]; then
+                    shift
+                fi
+                continue
+                ;;
+            --managed-settings=*)
+                shift
+                continue
+                ;;
+            --channels)
+                shift
+                while [ "\$#" -gt 0 ]; do
+                    case "\$1" in
+                        --*|-*)
+                            break
+                            ;;
+                        *)
+                            shift
+                            ;;
+                    esac
+                done
+                continue
+                ;;
+            --channels=*)
+                shift
+                continue
+                ;;
+        esac
+
+        filtered_args+=("\$1")
+        shift
+    done
+
+    exec node "\$CLI_JS" "\${filtered_args[@]}"
+fi
+
+exec node "\$CLI_JS" "\$@"
+EOF
+}
+
 # Load nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
@@ -125,20 +200,44 @@ else
     echo "Bundled agent SDK version: $AGENT_SDK_VERSION"
 fi
 
-echo "Updating @anthropic-ai/claude-agent-sdk@$AGENT_SDK_VERSION via npm..."
-npm install -g "@anthropic-ai/claude-agent-sdk@$AGENT_SDK_VERSION"
+REQUESTED_AGENT_SDK_VERSION="$AGENT_SDK_VERSION"
+SELECTED_AGENT_SDK_VERSION="$REQUESTED_AGENT_SDK_VERSION"
+
+install_agent_sdk_version "$SELECTED_AGENT_SDK_VERSION"
 
 NPM_ROOT="$(npm root -g)"
 
 # Find the installed cli.js
 CLI_JS="$(resolve_cli_js_path "$NPM_ROOT" || true)"
+if [ -z "$CLI_JS" ] && [ "$SELECTED_AGENT_SDK_VERSION" != "$LAST_KNOWN_CLI_SDK_VERSION" ]; then
+    echo "Warning: @anthropic-ai/claude-agent-sdk@$SELECTED_AGENT_SDK_VERSION no longer ships cli.js."
+    echo "         Falling back to last known JS CLI build: $LAST_KNOWN_CLI_SDK_VERSION"
+
+    SELECTED_AGENT_SDK_VERSION="$LAST_KNOWN_CLI_SDK_VERSION"
+    install_agent_sdk_version "$SELECTED_AGENT_SDK_VERSION"
+
+    NPM_ROOT="$(npm root -g)"
+    CLI_JS="$(resolve_cli_js_path "$NPM_ROOT" || true)"
+fi
+
 if [ -z "$CLI_JS" ]; then
     echo "Error: cli.js not found under $NPM_ROOT"
+    echo "       Requested SDK version: $REQUESTED_AGENT_SDK_VERSION"
+    echo "       Fallback SDK version:  $LAST_KNOWN_CLI_SDK_VERSION"
     exit 1
 fi
 
 NPM_VERSION=$(node -e "console.log(require(process.argv[1]).version)" "$NPM_ROOT/@anthropic-ai/claude-agent-sdk/package.json")
-echo "npm agent SDK version: $NPM_VERSION"
+echo "npm agent SDK version used: $NPM_VERSION"
+if [ "$REQUESTED_AGENT_SDK_VERSION" != "$NPM_VERSION" ]; then
+    echo "Requested agent SDK version: $REQUESTED_AGENT_SDK_VERSION"
+fi
+
+WRAPPER_FALLBACK_MODE="0"
+if [ "$REQUESTED_AGENT_SDK_VERSION" != "$NPM_VERSION" ]; then
+    WRAPPER_FALLBACK_MODE="1"
+    echo "Wrapper compatibility mode: enabled"
+fi
 
 # Patch both the app bundle binary (used by desktop app) and the standalone binary
 for BINARY_PATH in "$APP_BINARY_PATH" "$STANDALONE_BINARY_PATH"; do
@@ -154,12 +253,7 @@ for BINARY_PATH in "$APP_BINARY_PATH" "$STANDALONE_BINARY_PATH"; do
         echo "Existing wrapper found, replacing: $BINARY_PATH"
     fi
 
-    cat > "$BINARY_PATH" << EOF
-#!/bin/bash
-export NVM_DIR="\$HOME/.nvm"
-[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec node "$CLI_JS" "\$@"
-EOF
+    write_wrapper_script "$BINARY_PATH" "$CLI_JS" "$WRAPPER_FALLBACK_MODE"
     chmod +x "$BINARY_PATH"
     echo "Patched: $BINARY_PATH"
 done
@@ -167,7 +261,8 @@ done
 echo ""
 echo "Done! Claude desktop app patched."
 echo "  Desktop version dir: $LATEST_VERSION"
-echo "  npm agent SDK:       $NPM_VERSION"
+echo "  npm agent SDK used:  $NPM_VERSION"
+echo "  Requested SDK:       $REQUESTED_AGENT_SDK_VERSION"
 echo "  cli.js:              $CLI_JS"
 echo "  App binary:          $APP_BINARY_PATH"
 echo "  Standalone binary:   $STANDALONE_BINARY_PATH"

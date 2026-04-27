@@ -16,7 +16,7 @@ The Electron UI opens fine, but the app is unresponsive because its backend proc
 
 This script replaces the native binary with a wrapper that runs the npm-distributed `cli.js` from the Claude agent SDK via Node.js, which avoids the AVX2-only native path on older Intel Macs.
 
-Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code`, so the script now reads the SDK version bundled by your installed Claude Desktop app and installs the matching `@anthropic-ai/claude-agent-sdk` version instead.
+Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code`, and newer `@anthropic-ai/claude-agent-sdk` builds removed it as well. The script now reads the SDK version bundled by your installed Claude Desktop app, tries the matching SDK build first, and falls back to the last known SDK version that still ships `cli.js` when needed. When that fallback is active, the generated wrapper also strips newer Desktop-only flags that the old JS CLI does not understand.
 
 ## Requirements
 
@@ -44,9 +44,11 @@ Re-run the script after the desktop app updates:
 1. Finds the latest version directory the desktop app created
 2. Reads the bundled `@anthropic-ai/claude-agent-sdk` version from your local Claude Desktop app
 3. Installs the matching SDK version via npm
-4. Backs up the native binary (if present)
-5. Replaces it with a shell wrapper that invokes `node .../cli.js`
-6. Restart the Claude desktop app to apply
+4. Falls back to the last known JS-CLI SDK build if the matching version no longer ships `cli.js`
+5. Backs up the native binary (if present)
+6. Replaces it with a shell wrapper that invokes `node .../cli.js`
+7. In fallback mode, strips newer Desktop-only flags such as `--managed-settings`, `--assistant`, and `--channels` before launching the old JS CLI
+8. Restart the Claude desktop app to apply
 
 ## Affected hardware
 
