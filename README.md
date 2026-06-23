@@ -67,7 +67,21 @@ Re-run the script after Claude Desktop updates:
 
 ## Affected hardware
 
-Any Intel Mac with a CPU older than Haswell (4th gen, 2013), including:
-- Mac Pro 5,1 (2010/2012) - Westmere Xeon
-- Mac Pro 4,1 (2009) - Nehalem Xeon
-- Older iMacs, MacBooks, Mac Minis with Sandy Bridge or Ivy Bridge CPUs
+Any Intel Mac with a CPU older than Haswell (4th gen, 2013) may be affected, because these CPUs do not support AVX2. Known affected model families include:
+
+- Mac Pro 4,1 (Early 2009) - Nehalem Xeon
+- Mac Pro 5,1 (Mid 2010/Mid 2012) - Westmere Xeon
+- Mac Pro 6,1 (Late 2013) - Ivy Bridge Xeon E5 v2
+- MacBook Pro 8,x (Early/Late 2011) - Sandy Bridge
+- MacBook Pro 9,x (Mid 2012), including MacBookPro9,1 - Ivy Bridge
+- MacBook Pro 10,x (Retina Mid 2012/Early 2013) - Ivy Bridge
+- MacBook Air 4,x (Mid 2011) - Sandy Bridge
+- MacBook Air 5,x (Mid 2012) - Ivy Bridge
+- iMac 12,x (Mid 2011) - Sandy Bridge
+- iMac 13,x (Late 2012/Early 2013) - Ivy Bridge
+- Mac mini 5,x (Mid 2011) - Sandy Bridge
+- Mac mini 6,x (Late 2012) - Ivy Bridge
+
+Older Intel Macs, such as Core 2 Duo MacBooks/MacBook Pros/MacBook Airs, iMac 10,x/11,x, and Mac mini 4,1, also lack AVX2. They may need additional OS-level patching and are less likely to run current Claude Desktop successfully, but the underlying AVX2 issue is the same.
+
+Haswell and newer Intel Macs usually support AVX2 and should not need this workaround. Examples that are normally outside the affected range include MacBookPro11,x and newer, MacBookAir6,x and newer, iMac14,x and newer, and Macmini7,1 and newer.
