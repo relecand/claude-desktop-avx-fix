@@ -26,15 +26,26 @@ Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code
 
 ## Usage
 
+Use the `codex-fix-claude-sdk-cli-resolution` branch from this fork until the fixes are merged upstream:
+
 ```bash
 # First time
-git clone https://github.com/$(gh api user -q .login)/claude-desktop-avx-fix.git
+git clone --branch codex-fix-claude-sdk-cli-resolution https://github.com/relecand/claude-desktop-avx-fix.git
 cd claude-desktop-avx-fix
 chmod +x update-claude-desktop.sh
 ./update-claude-desktop.sh
 ```
 
-Re-run the script after the desktop app updates:
+If you already cloned the repository, switch to the fix branch and update it:
+
+```bash
+git fetch origin
+git switch codex-fix-claude-sdk-cli-resolution
+git pull --ff-only
+./update-claude-desktop.sh
+```
+
+Re-run the script after Claude Desktop updates:
 
 ```bash
 ./update-claude-desktop.sh
