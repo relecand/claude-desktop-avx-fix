@@ -9,6 +9,8 @@
 set -euo pipefail
 
 CLAUDE_CODE_DIR="$HOME/Library/Application Support/Claude/claude-code"
+LOCAL_OVERRIDE_DIR="$HOME/Library/Application Support/Claude/claude-code-avx-fix"
+LOCAL_OVERRIDE_BINARY_PATH="$LOCAL_OVERRIDE_DIR/claude"
 NVM_DIR="$HOME/.nvm"
 LAST_KNOWN_CLI_SDK_VERSION="0.2.112"
 CLAUDE_APP_CANDIDATES=(
@@ -72,6 +74,12 @@ resolve_cli_js_path() {
     return 1
 }
 
+is_installed_wrapper() {
+    local binary_path="$1"
+
+    strings "$binary_path" 2>/dev/null | grep -Eq "claude-desktop-avx-fix-mach-o-wrapper|@anthropic-ai/claude-agent-sdk/cli.js"
+}
+
 install_agent_sdk_version() {
     local version="$1"
 
@@ -83,67 +91,104 @@ write_wrapper_script() {
     local binary_path="$1"
     local cli_js="$2"
     local fallback_mode="$3"
+    local node_bin="$4"
+    local tmp_dir
+    local source_path
+    local node_literal
+    local cli_literal
 
-    cat > "$binary_path" <<EOF
-#!/bin/bash
-export NVM_DIR="\$HOME/.nvm"
-[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+    if ! command -v clang >/dev/null 2>&1; then
+        echo "Error: clang not found. Install Xcode Command Line Tools to build the Mach-O wrapper."
+        exit 1
+    fi
 
-CLI_JS="$cli_js"
-FALLBACK_MODE="$fallback_mode"
+    tmp_dir="$(mktemp -d)"
+    source_path="$tmp_dir/claude-avx-wrapper.c"
+    node_literal="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$node_bin")"
+    cli_literal="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$cli_js")"
 
-if [ "\$FALLBACK_MODE" = "1" ]; then
-    filtered_args=()
+    cat > "$source_path" <<EOF
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
-    # Newer Claude Desktop builds pass process-management flags that were added
-    # after the last JS CLI release. Drop them so the fallback CLI can still
-    # boot and speak stream-json to the desktop app.
-    while [ "\$#" -gt 0 ]; do
-        case "\$1" in
-            --assistant|--assistant=*)
-                shift
-                continue
-                ;;
-            --managed-settings)
-                shift
-                if [ "\$#" -gt 0 ]; then
-                    shift
-                fi
-                continue
-                ;;
-            --managed-settings=*)
-                shift
-                continue
-                ;;
-            --channels)
-                shift
-                while [ "\$#" -gt 0 ]; do
-                    case "\$1" in
-                        --*|-*)
-                            break
-                            ;;
-                        *)
-                            shift
-                            ;;
-                    esac
-                done
-                continue
-                ;;
-            --channels=*)
-                shift
-                continue
-                ;;
-        esac
+static const char *NODE_BIN = $node_literal;
+static const char *CLI_JS = $cli_literal;
+static const char *WRAPPER_MARKER = "claude-desktop-avx-fix-mach-o-wrapper";
+static const int FALLBACK_MODE = $fallback_mode;
 
-        filtered_args+=("\$1")
-        shift
-    done
+static int starts_with(const char *value, const char *prefix) {
+    return strncmp(value, prefix, strlen(prefix)) == 0;
+}
 
-    exec node "\$CLI_JS" "\${filtered_args[@]}"
-fi
+static int is_flag(const char *value) {
+    return value != NULL && value[0] == '-';
+}
 
-exec node "\$CLI_JS" "\$@"
+int main(int argc, char **argv) {
+    const char *node_bin = NODE_BIN;
+
+    if (access(node_bin, X_OK) != 0) {
+        fprintf(stderr, "Error: node not found. Expected node at %s\\n", NODE_BIN);
+        return 127;
+    }
+
+    char **filtered_args = calloc((size_t)argc + 2, sizeof(char *));
+    if (filtered_args == NULL) {
+        fprintf(stderr, "Error: failed to allocate argument list (%s)\\n", WRAPPER_MARKER);
+        return 126;
+    }
+
+    int output_index = 0;
+    filtered_args[output_index++] = (char *)node_bin;
+    filtered_args[output_index++] = (char *)CLI_JS;
+
+    for (int input_index = 1; input_index < argc; input_index++) {
+        char *arg = argv[input_index];
+
+        if (FALLBACK_MODE) {
+            if (strcmp(arg, "--assistant") == 0 || starts_with(arg, "--assistant=")) {
+                continue;
+            }
+            if (strcmp(arg, "--managed-settings") == 0) {
+                if (input_index + 1 < argc) {
+                    input_index++;
+                }
+                continue;
+            }
+            if (starts_with(arg, "--managed-settings=")) {
+                continue;
+            }
+            if (strcmp(arg, "--channels") == 0) {
+                input_index++;
+                while (input_index < argc) {
+                    if (is_flag(argv[input_index])) {
+                        input_index--;
+                        break;
+                    }
+                    input_index++;
+                }
+                continue;
+            }
+            if (starts_with(arg, "--channels=")) {
+                continue;
+            }
+        }
+
+        filtered_args[output_index++] = arg;
+    }
+
+    filtered_args[output_index] = NULL;
+    execv(node_bin, filtered_args);
+    fprintf(stderr, "Error: failed to exec %s: %s\\n", node_bin, strerror(errno));
+    return errno == ENOENT ? 127 : 126;
+}
 EOF
+
+    clang -arch x86_64 -mmacosx-version-min=10.13 -O2 -mno-avx -mno-avx2 "$source_path" -o "$binary_path"
+    rm -rf "$tmp_dir"
 }
 
 # Load nvm
@@ -173,6 +218,7 @@ fi
 
 APP_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude.app/Contents/MacOS/claude"
 STANDALONE_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude"
+VERIFIED_MARKER_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/.verified"
 echo "Found desktop claude-code version: $LATEST_VERSION"
 
 CLAUDE_APP_ASAR=""
@@ -239,6 +285,23 @@ if [ "$REQUESTED_AGENT_SDK_VERSION" != "$NPM_VERSION" ]; then
     echo "Wrapper compatibility mode: enabled"
 fi
 
+mkdir -p "$LOCAL_OVERRIDE_DIR"
+write_wrapper_script "$LOCAL_OVERRIDE_BINARY_PATH" "$CLI_JS" "$WRAPPER_FALLBACK_MODE" "$NODE_PATH"
+chmod +x "$LOCAL_OVERRIDE_BINARY_PATH"
+echo "Installed local override wrapper: $LOCAL_OVERRIDE_BINARY_PATH"
+
+if command -v launchctl >/dev/null 2>&1; then
+    USER_ID="$(id -u)"
+    if launchctl asuser "$USER_ID" launchctl setenv CLAUDE_CODE_LOCAL_BINARY "$LOCAL_OVERRIDE_BINARY_PATH"; then
+        echo "Set GUI launchd environment: CLAUDE_CODE_LOCAL_BINARY=$LOCAL_OVERRIDE_BINARY_PATH"
+    else
+        launchctl setenv CLAUDE_CODE_LOCAL_BINARY "$LOCAL_OVERRIDE_BINARY_PATH"
+        echo "Set launchd environment: CLAUDE_CODE_LOCAL_BINARY=$LOCAL_OVERRIDE_BINARY_PATH"
+    fi
+else
+    echo "Warning: launchctl not found. Set CLAUDE_CODE_LOCAL_BINARY manually before launching Claude Desktop."
+fi
+
 # Patch both the app bundle binary (used by desktop app) and the standalone binary
 for BINARY_PATH in "$APP_BINARY_PATH" "$STANDALONE_BINARY_PATH"; do
     if [ ! -e "$BINARY_PATH" ] && [ ! -L "$BINARY_PATH" ]; then
@@ -247,16 +310,25 @@ for BINARY_PATH in "$APP_BINARY_PATH" "$STANDALONE_BINARY_PATH"; do
     fi
 
     if file "$BINARY_PATH" 2>/dev/null | grep -q "Mach-O"; then
-        echo "Backing up native binary: $BINARY_PATH -> ${BINARY_PATH}.bun.bak"
-        mv "$BINARY_PATH" "${BINARY_PATH}.bun.bak"
+        if is_installed_wrapper "$BINARY_PATH"; then
+            echo "Existing Mach-O wrapper found, replacing: $BINARY_PATH"
+        elif [ -e "${BINARY_PATH}.bun.bak" ]; then
+            echo "Native binary backup already exists: ${BINARY_PATH}.bun.bak"
+        else
+            echo "Backing up native binary: $BINARY_PATH -> ${BINARY_PATH}.bun.bak"
+            mv "$BINARY_PATH" "${BINARY_PATH}.bun.bak"
+        fi
     elif head -1 "$BINARY_PATH" 2>/dev/null | grep -q "^#!/bin/bash"; then
         echo "Existing wrapper found, replacing: $BINARY_PATH"
     fi
 
-    write_wrapper_script "$BINARY_PATH" "$CLI_JS" "$WRAPPER_FALLBACK_MODE"
+    write_wrapper_script "$BINARY_PATH" "$CLI_JS" "$WRAPPER_FALLBACK_MODE" "$NODE_PATH"
     chmod +x "$BINARY_PATH"
     echo "Patched: $BINARY_PATH"
 done
+
+touch "$VERIFIED_MARKER_PATH"
+echo "Ensured verified marker: $VERIFIED_MARKER_PATH"
 
 echo ""
 echo "Done! Claude desktop app patched."
@@ -264,6 +336,7 @@ echo "  Desktop version dir: $LATEST_VERSION"
 echo "  npm agent SDK used:  $NPM_VERSION"
 echo "  Requested SDK:       $REQUESTED_AGENT_SDK_VERSION"
 echo "  cli.js:              $CLI_JS"
+echo "  Local override:      $LOCAL_OVERRIDE_BINARY_PATH"
 echo "  App binary:          $APP_BINARY_PATH"
 echo "  Standalone binary:   $STANDALONE_BINARY_PATH"
 echo ""
