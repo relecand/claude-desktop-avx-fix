@@ -28,6 +28,8 @@ Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code
 
 Use the `codex-fix-claude-sdk-cli-resolution` branch from this fork until the fixes are merged upstream:
 
+> **Important:** Run `./update-claude-desktop.sh` again after every Claude Desktop update. Claude Desktop downloads a fresh Claude Code binary during updates, so the AVX-compatible launcher must be re-applied.
+
 ```bash
 # First time
 git clone --branch codex-fix-claude-sdk-cli-resolution https://github.com/relecand/claude-desktop-avx-fix.git
@@ -45,7 +47,7 @@ git pull --ff-only
 ./update-claude-desktop.sh
 ```
 
-Re-run the script after Claude Desktop updates:
+After each Claude Desktop update, run the patch again:
 
 ```bash
 ./update-claude-desktop.sh
