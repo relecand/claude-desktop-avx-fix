@@ -20,9 +20,11 @@ Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code
 
 ## Requirements
 
-- [nvm](https://github.com/nvm-sh/nvm) with a working Node.js installation
-- Xcode Command Line Tools (`clang`) to build the tiny launcher
-- The Claude desktop app installed
+- Claude Desktop installed and launched at least once, so it has created its local Claude Code bundle
+- Node.js and npm available on your shell `PATH`; [nvm](https://github.com/nvm-sh/nvm) works well, but is not strictly required
+- A user-writable global npm install location, because the script runs `npm install -g`
+- Xcode Command Line Tools (`clang`) to build the tiny Mach-O launcher
+- macOS `launchctl` and `plutil` for the optional auto-repatch helper; both are included with macOS
 
 ## Usage
 
@@ -53,7 +55,11 @@ After each Claude Desktop update, run the patch again:
 ./update-claude-desktop.sh
 ```
 
-Optional: install a per-user LaunchAgent to re-run the patch automatically after login and when Claude Desktop updates its Claude Code bundle:
+## Automatic repatch after updates
+
+Recommended: install the auto-repatch helper so you do not have to remember running the patch manually after each Claude Desktop update.
+
+The helper installs a per-user macOS LaunchAgent. It runs after login and whenever Claude Desktop updates its local Claude Code bundle. It does not block Claude Desktop updates or lock any app-managed files; it simply re-applies `update-claude-desktop.sh` after the update lands.
 
 ```bash
 chmod +x install-auto-repatch.sh
@@ -71,6 +77,8 @@ To remove the LaunchAgent:
 ```bash
 ./install-auto-repatch.sh --uninstall
 ```
+
+Keep this repository checkout in place after installing the helper. The LaunchAgent calls `update-claude-desktop.sh` from this directory.
 
 ## What it does
 
