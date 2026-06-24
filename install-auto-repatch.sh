@@ -60,6 +60,7 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 require_command plutil "plutil is required to validate the generated LaunchAgent plist."
+require_command strings "strings is required so the auto-repatcher can detect already patched binaries."
 
 if [ ! -x "$PATCH_SCRIPT" ]; then
     echo "Error: patch script not executable: $PATCH_SCRIPT" >&2
@@ -81,10 +82,39 @@ set -euo pipefail
 export HOME="$HOME"
 export PATH="$LAUNCHD_PATH"
 
+CLAUDE_CODE_DIR="$CLAUDE_CODE_DIR"
+PATCH_SCRIPT="$PATCH_SCRIPT"
 LOCK_DIR="$SUPPORT_DIR/.auto-repatch.lock"
+WRAPPER_MARKER="claude-desktop-avx-fix-mach-o-wrapper"
 
 timestamp() {
     date "+%Y-%m-%d %H:%M:%S"
+}
+
+latest_version() {
+    ls -1 "\$CLAUDE_CODE_DIR" 2>/dev/null | sort -V | tail -1
+}
+
+latest_app_binary() {
+    local version
+    version="\$(latest_version || true)"
+
+    if [ -z "\$version" ]; then
+        return 1
+    fi
+
+    printf "%s/%s/claude.app/Contents/MacOS/claude\\n" "\$CLAUDE_CODE_DIR" "\$version"
+}
+
+already_patched() {
+    local binary_path
+    binary_path="\$(latest_app_binary || true)"
+
+    if [ -z "\$binary_path" ] || [ ! -f "\$binary_path" ]; then
+        return 1
+    fi
+
+    strings "\$binary_path" 2>/dev/null | grep -q "\$WRAPPER_MARKER"
 }
 
 if ! mkdir "\$LOCK_DIR" 2>/dev/null; then
@@ -101,8 +131,13 @@ trap cleanup EXIT
 # WatchPaths fires. Wait briefly so the patch sees a complete version folder.
 sleep 20
 
+if already_patched; then
+    echo "[\$(timestamp)] latest Claude Code binary already patched; skipping"
+    exit 0
+fi
+
 echo "[\$(timestamp)] running Claude Desktop AVX re-patch"
-"$PATCH_SCRIPT"
+"\$PATCH_SCRIPT"
 echo "[\$(timestamp)] re-patch finished"
 EOF
 
