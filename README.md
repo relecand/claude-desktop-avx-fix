@@ -53,6 +53,25 @@ After each Claude Desktop update, run the patch again:
 ./update-claude-desktop.sh
 ```
 
+Optional: install a per-user LaunchAgent to re-run the patch automatically after login and when Claude Desktop updates its Claude Code bundle:
+
+```bash
+chmod +x install-auto-repatch.sh
+./install-auto-repatch.sh
+```
+
+The auto-repatcher writes logs to:
+
+```bash
+~/Library/Logs/claude-desktop-avx-fix.log
+```
+
+To remove the LaunchAgent:
+
+```bash
+./install-auto-repatch.sh --uninstall
+```
+
 ## What it does
 
 1. Finds the latest version directory the desktop app created
@@ -66,6 +85,8 @@ After each Claude Desktop update, run the patch again:
 9. Embeds the absolute Node.js path used to run `cli.js`, avoiding app-launch `PATH` issues
 10. In fallback mode, strips newer Desktop-only flags such as `--managed-settings`, `--assistant`, and `--channels` before launching the old JS CLI
 11. Restart the Claude desktop app to apply
+
+The optional `install-auto-repatch.sh` helper installs a user LaunchAgent that watches Claude Desktop's `claude-code` directory and re-runs this patch after updates. It does not block Claude Desktop updates or lock any app-managed files.
 
 ## Affected hardware
 
