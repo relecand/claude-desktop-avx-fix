@@ -26,6 +26,48 @@ Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code
 - Xcode Command Line Tools (`clang`) to build the tiny Mach-O launcher
 - macOS `launchctl` and `plutil` for the optional auto-repatch helper; both are included with macOS
 
+The scripts perform preflight checks for these requirements and fail early with a clear error message when something is missing or not writable.
+
+### Installing requirements
+
+Claude Desktop:
+
+Download the macOS app from [claude.com/download](https://claude.com/download), move it to `/Applications`, sign in, and launch it once. This creates the local Claude Code bundle that the patch script modifies.
+
+Xcode Command Line Tools:
+
+```bash
+xcode-select --install
+clang --version
+```
+
+Node.js and npm:
+
+Install Node.js with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating), then open a new terminal and run:
+
+```bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm install --lts
+nvm use --lts
+node -v
+npm -v
+```
+
+User-writable npm global prefix:
+
+```bash
+mkdir -p "$HOME/.local"
+npm config set prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add the same `PATH` export to your shell profile (`~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`) if `~/.local/bin` is not already on your `PATH`.
+
+Auto-repatch helper:
+
+No extra install is needed for `launchctl` or `plutil`; both are included with macOS.
+
 ## Usage
 
 Use the `codex-fix-claude-sdk-cli-resolution` branch from this fork until the fixes are merged upstream:

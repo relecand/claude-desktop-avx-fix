@@ -18,6 +18,61 @@ CLAUDE_APP_CANDIDATES=(
     "$HOME/Applications/Claude.app"
 )
 
+error() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+require_command() {
+    local command_name="$1"
+    local help_text="$2"
+
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        error "$command_name not found. $help_text"
+    fi
+}
+
+check_macos() {
+    if [ "$(uname -s)" != "Darwin" ]; then
+        error "This script is intended for macOS."
+    fi
+}
+
+check_npm_global_prefix_writable() {
+    local npm_prefix
+    local check_path
+
+    npm_prefix="$(npm config get prefix 2>/dev/null || true)"
+    if [ -z "$npm_prefix" ] || [ "$npm_prefix" = "undefined" ]; then
+        error "Could not read npm's global prefix. Check your Node.js/npm installation."
+    fi
+
+    check_path="$npm_prefix"
+    while [ ! -e "$check_path" ] && [ "$check_path" != "/" ]; do
+        check_path="$(dirname "$check_path")"
+    done
+
+    if [ ! -w "$check_path" ]; then
+        cat >&2 <<EOF
+Error: npm's global prefix is not writable: $npm_prefix
+Set a user-writable npm prefix, for example:
+  npm config set prefix ~/.local
+Then make sure ~/.local/bin is on your PATH.
+EOF
+        exit 1
+    fi
+}
+
+run_preflight_checks() {
+    check_macos
+    require_command node "Install Node.js first; nvm works well, but is not required."
+    require_command npm "Install npm with Node.js first."
+    require_command clang "Install Xcode Command Line Tools: xcode-select --install"
+    require_command file "The macOS file utility is required."
+    require_command strings "The macOS strings utility is required."
+    check_npm_global_prefix_writable
+}
+
 find_claude_app_asar() {
     local app_path
     local asar_path
@@ -194,26 +249,19 @@ EOF
 # Load nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-# Check node/npm are available
-if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
-    echo "Error: node/npm not found. Make sure nvm is installed and a node version is active."
-    exit 1
-fi
+run_preflight_checks
 
 NODE_PATH="$(which node)"
 echo "Using node: $NODE_PATH ($(node -v))"
 
 # Find the latest version directory in claude-code
 if [ ! -d "$CLAUDE_CODE_DIR" ]; then
-    echo "Error: Claude code directory not found at $CLAUDE_CODE_DIR"
-    echo "Make sure the Claude desktop app is installed."
-    exit 1
+    error "Claude code directory not found at $CLAUDE_CODE_DIR. Install and launch Claude Desktop once before running this patch."
 fi
 
 LATEST_VERSION=$(ls -1 "$CLAUDE_CODE_DIR" | sort -V | tail -1)
 if [ -z "$LATEST_VERSION" ]; then
-    echo "Error: No version directory found in $CLAUDE_CODE_DIR"
-    exit 1
+    error "No version directory found in $CLAUDE_CODE_DIR. Launch Claude Desktop once so it downloads Claude Code."
 fi
 
 APP_BINARY_PATH="$CLAUDE_CODE_DIR/$LATEST_VERSION/claude.app/Contents/MacOS/claude"

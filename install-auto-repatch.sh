@@ -20,6 +20,26 @@ PLIST_PATH="$LAUNCH_AGENTS_DIR/$LABEL.plist"
 LOG_PATH="$HOME/Library/Logs/claude-desktop-avx-fix.log"
 LAUNCHD_PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+error() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+require_command() {
+    local command_name="$1"
+    local help_text="$2"
+
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        error "$command_name not found. $help_text"
+    fi
+}
+
+check_macos() {
+    if [ "$(uname -s)" != "Darwin" ]; then
+        error "This helper is intended for macOS."
+    fi
+}
+
 unload_agent() {
     local user_id
     user_id="$(id -u)"
@@ -27,6 +47,9 @@ unload_agent() {
     launchctl bootout "gui/$user_id" "$PLIST_PATH" >/dev/null 2>&1 || true
     launchctl unload "$PLIST_PATH" >/dev/null 2>&1 || true
 }
+
+check_macos
+require_command launchctl "launchctl is required to install the per-user LaunchAgent."
 
 if [ "${1:-}" = "--uninstall" ]; then
     unload_agent
@@ -36,13 +59,19 @@ if [ "${1:-}" = "--uninstall" ]; then
     exit 0
 fi
 
+require_command plutil "plutil is required to validate the generated LaunchAgent plist."
+
 if [ ! -x "$PATCH_SCRIPT" ]; then
-    echo "Error: patch script not executable: $PATCH_SCRIPT"
+    echo "Error: patch script not executable: $PATCH_SCRIPT" >&2
     echo "Run: chmod +x update-claude-desktop.sh"
     exit 1
 fi
 
-mkdir -p "$CLAUDE_CODE_DIR" "$SUPPORT_DIR" "$LAUNCH_AGENTS_DIR" "$(dirname "$LOG_PATH")"
+if [ ! -d "$CLAUDE_CODE_DIR" ]; then
+    error "Claude code directory not found at $CLAUDE_CODE_DIR. Install and launch Claude Desktop once before installing auto-repatch."
+fi
+
+mkdir -p "$SUPPORT_DIR" "$LAUNCH_AGENTS_DIR" "$(dirname "$LOG_PATH")"
 touch "$LOG_PATH"
 
 cat > "$RUNNER_PATH" <<EOF
