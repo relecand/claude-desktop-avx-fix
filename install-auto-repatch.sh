@@ -85,6 +85,8 @@ export PATH="$LAUNCHD_PATH"
 CLAUDE_CODE_DIR="$CLAUDE_CODE_DIR"
 PATCH_SCRIPT="$PATCH_SCRIPT"
 LOCK_DIR="$SUPPORT_DIR/.auto-repatch.lock"
+LOCK_PID_FILE="\$LOCK_DIR/pid"
+STALE_LOCK_SECONDS=1800
 WRAPPER_MARKER="claude-desktop-avx-fix-mach-o-wrapper"
 
 timestamp() {
@@ -117,12 +119,80 @@ already_patched() {
     strings "\$binary_path" 2>/dev/null | grep -q "\$WRAPPER_MARKER"
 }
 
-if ! mkdir "\$LOCK_DIR" 2>/dev/null; then
-    echo "[\$(timestamp)] auto-repatch already running; skipping"
+lock_age_seconds() {
+    local modified_at
+    local now
+
+    modified_at="\$(stat -f %m "\$LOCK_DIR" 2>/dev/null || echo 0)"
+    now="\$(date +%s)"
+
+    if [ "\$modified_at" -le 0 ]; then
+        echo 0
+    else
+        echo "\$((now - modified_at))"
+    fi
+}
+
+clear_stale_lock() {
+    rm -f "\$LOCK_PID_FILE" 2>/dev/null || true
+    rmdir "\$LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_lock() {
+    local existing_pid
+    local age
+
+    if mkdir "\$LOCK_DIR" 2>/dev/null; then
+        echo "\$\$" > "\$LOCK_PID_FILE"
+        return 0
+    fi
+
+    existing_pid=""
+    if [ -f "\$LOCK_PID_FILE" ]; then
+        existing_pid="\$(cat "\$LOCK_PID_FILE" 2>/dev/null || true)"
+    fi
+
+    if [[ "\$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "\$existing_pid" 2>/dev/null; then
+        echo "[\$(timestamp)] auto-repatch already running as pid \$existing_pid; skipping"
+        exit 0
+    fi
+
+    age="\$(lock_age_seconds)"
+    if [ "\$age" -ge "\$STALE_LOCK_SECONDS" ] || [ -z "\$existing_pid" ]; then
+        echo "[\$(timestamp)] clearing stale auto-repatch lock (age: \${age}s)"
+        clear_stale_lock
+        if mkdir "\$LOCK_DIR" 2>/dev/null; then
+            echo "\$\$" > "\$LOCK_PID_FILE"
+            return 0
+        fi
+    fi
+
+    echo "[\$(timestamp)] auto-repatch lock exists but could not be acquired; skipping"
     exit 0
-fi
+}
+
+wait_for_latest_binary() {
+    local attempt
+    local binary_path
+
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        binary_path="\$(latest_app_binary || true)"
+        if [ -n "\$binary_path" ] && [ -f "\$binary_path" ]; then
+            return 0
+        fi
+
+        echo "[\$(timestamp)] waiting for Claude Code binary to appear (attempt \$attempt/12)"
+        sleep 10
+    done
+
+    echo "[\$(timestamp)] latest Claude Code binary not found yet; skipping for now"
+    return 1
+}
+
+acquire_lock
 
 cleanup() {
+    rm -f "\$LOCK_PID_FILE" 2>/dev/null || true
     rmdir "\$LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -130,6 +200,10 @@ trap cleanup EXIT
 # Claude Desktop may still be unpacking the new Claude Code bundle when
 # WatchPaths fires. Wait briefly so the patch sees a complete version folder.
 sleep 20
+
+if ! wait_for_latest_binary; then
+    exit 0
+fi
 
 if already_patched; then
     echo "[\$(timestamp)] latest Claude Code binary already patched; skipping"
