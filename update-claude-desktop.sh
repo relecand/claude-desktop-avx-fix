@@ -142,6 +142,12 @@ install_agent_sdk_version() {
     npm install -g "@anthropic-ai/claude-agent-sdk@$version"
 }
 
+is_agent_sdk_version_published() {
+    local version="$1"
+
+    npm view "@anthropic-ai/claude-agent-sdk@$version" version >/dev/null 2>&1
+}
+
 write_wrapper_script() {
     local binary_path="$1"
     local cli_js="$2"
@@ -296,6 +302,13 @@ fi
 
 REQUESTED_AGENT_SDK_VERSION="$AGENT_SDK_VERSION"
 SELECTED_AGENT_SDK_VERSION="$REQUESTED_AGENT_SDK_VERSION"
+
+if [ "$SELECTED_AGENT_SDK_VERSION" != "$LAST_KNOWN_CLI_SDK_VERSION" ] && \
+    ! is_agent_sdk_version_published "$SELECTED_AGENT_SDK_VERSION"; then
+    echo "Warning: @anthropic-ai/claude-agent-sdk@$SELECTED_AGENT_SDK_VERSION is not published on npm."
+    echo "         Falling back to last known JS CLI build: $LAST_KNOWN_CLI_SDK_VERSION"
+    SELECTED_AGENT_SDK_VERSION="$LAST_KNOWN_CLI_SDK_VERSION"
+fi
 
 install_agent_sdk_version "$SELECTED_AGENT_SDK_VERSION"
 
