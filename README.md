@@ -108,7 +108,7 @@ that Gatekeeper never inspects. `--restore` puts the signed original back.
 ## Usage
 
 ```bash
-git clone https://github.com/SamuelSantos-R/claude-desktop-avx-fix.git
+git clone https://github.com/relecand/claude-desktop-avx-fix.git
 cd claude-desktop-avx-fix
 chmod +x update-claude-desktop.sh install-auto-repatch.sh
 
@@ -208,7 +208,11 @@ npm install -g @anthropic-ai/claude-code@latest
 
 ## Credits
 
-Fork of [relecand/claude-desktop-avx-fix](https://github.com/relecand/claude-desktop-avx-fix).
-This fork adds the health probing, the `--check` / `--restore` modes, the
-npm-tarball binary source that no longer touches your global npm install, and
-keeps the original Node.js launcher as a fallback.
+Originally by [relecand](https://github.com/relecand/claude-desktop-avx-fix),
+which established the diagnosis and the Node.js launcher fallback.
+
+Later additions: health probing of the bundled binary, the `--check` and
+`--restore` modes, sourcing the replacement from the npm platform tarball so a
+patch never touches your global npm install, `sha512` verification of that
+download, stale-lock recovery in the auto-repatch watcher, and reporting the
+bundle's code-signature state.
