@@ -60,7 +60,6 @@ if [ "${1:-}" = "--uninstall" ]; then
 fi
 
 require_command plutil "plutil is required to validate the generated LaunchAgent plist."
-require_command strings "strings is required so the auto-repatcher can detect already patched binaries."
 
 if [ ! -x "$PATCH_SCRIPT" ]; then
     echo "Error: patch script not executable: $PATCH_SCRIPT" >&2
@@ -82,39 +81,11 @@ set -euo pipefail
 export HOME="$HOME"
 export PATH="$LAUNCHD_PATH"
 
-CLAUDE_CODE_DIR="$CLAUDE_CODE_DIR"
 PATCH_SCRIPT="$PATCH_SCRIPT"
 LOCK_DIR="$SUPPORT_DIR/.auto-repatch.lock"
-WRAPPER_MARKER="claude-desktop-avx-fix-mach-o-wrapper"
 
 timestamp() {
     date "+%Y-%m-%d %H:%M:%S"
-}
-
-latest_version() {
-    ls -1 "\$CLAUDE_CODE_DIR" 2>/dev/null | sort -V | tail -1
-}
-
-latest_app_binary() {
-    local version
-    version="\$(latest_version || true)"
-
-    if [ -z "\$version" ]; then
-        return 1
-    fi
-
-    printf "%s/%s/claude.app/Contents/MacOS/claude\\n" "\$CLAUDE_CODE_DIR" "\$version"
-}
-
-already_patched() {
-    local binary_path
-    binary_path="\$(latest_app_binary || true)"
-
-    if [ -z "\$binary_path" ] || [ ! -f "\$binary_path" ]; then
-        return 1
-    fi
-
-    strings "\$binary_path" 2>/dev/null | grep -q "\$WRAPPER_MARKER"
 }
 
 if ! mkdir "\$LOCK_DIR" 2>/dev/null; then
@@ -128,17 +99,29 @@ cleanup() {
 trap cleanup EXIT
 
 # Claude Desktop may still be unpacking the new Claude Code bundle when
-# WatchPaths fires. Wait briefly so the patch sees a complete version folder.
+# WatchPaths fires. Wait briefly so the check sees a complete version folder.
 sleep 20
 
-if already_patched; then
-    echo "[\$(timestamp)] latest Claude Code binary already patched; skipping"
-    exit 0
-fi
+# update-claude-desktop.sh --check exits 0 when there is nothing to do,
+# 2 when the freshly downloaded binary needs the fix, and 1 on error.
+status=0
+"\$PATCH_SCRIPT" --check || status=\$?
 
-echo "[\$(timestamp)] running Claude Desktop AVX re-patch"
-"\$PATCH_SCRIPT"
-echo "[\$(timestamp)] re-patch finished"
+case "\$status" in
+    0)
+        echo "[\$(timestamp)] nothing to do"
+        exit 0
+        ;;
+    2)
+        echo "[\$(timestamp)] running Claude Desktop AVX re-patch"
+        "\$PATCH_SCRIPT"
+        echo "[\$(timestamp)] re-patch finished"
+        ;;
+    *)
+        echo "[\$(timestamp)] check failed (exit \$status); not patching"
+        exit 0
+        ;;
+esac
 EOF
 
 chmod +x "$RUNNER_PATH"

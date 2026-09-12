@@ -1,160 +1,188 @@
 # claude-desktop-avx-fix
 
-Fixes the Claude desktop app on older Intel Macs that lack AVX2 support (pre-Haswell CPUs, circa 2013).
-
-## The Problem
-
-The Claude desktop app bundles a native binary (built with Bun) that requires AVX2 CPU instructions. On older Intel Macs (e.g. Mac Pro 5,1 with Xeon X5675), this binary crashes immediately with:
+Gets Claude Desktop working on Intel Macs whose CPU has no AVX2 (anything older
+than Haswell, so roughly pre-2013), where the bundled Claude Code agent dies
+instantly with:
 
 ```
 Illegal instruction: 4
 ```
 
-The Electron UI opens fine, but the app is unresponsive because its backend process dies on launch.
+The Electron window opens normally, but the agent process behind it is already
+dead, so the app never answers anything.
 
-## The Fix
+> **Run `./update-claude-desktop.sh --check` first.** Recent Claude Code builds
+> are compiled for a lower CPU baseline and no longer need AVX2, so many people
+> who hit this in the past are no longer affected. The check tells you in a few
+> seconds whether you need anything at all, and changes nothing.
 
-This script installs a small Mach-O launcher that runs the npm-distributed `cli.js` from the Claude agent SDK via Node.js, which avoids the AVX2-only native path on older Intel Macs.
+## The bug
 
-Recent Claude releases no longer ship `cli.js` inside `@anthropic-ai/claude-code`, and newer `@anthropic-ai/claude-agent-sdk` builds removed it as well. The script now reads the SDK version bundled by your installed Claude Desktop app, tries the matching SDK build first, and falls back to the last known SDK version that still ships `cli.js` when needed. When that fallback is active, the generated launcher also strips newer Desktop-only flags that the old JS CLI does not understand. The launcher embeds the absolute Node.js path found during patching so it can still launch from Claude Desktop's limited app environment. It is compiled as a Mach-O executable so Claude Desktop's binary cache check does not purge it as an invalid shell script.
+Claude Desktop downloads its own copy of the Claude Code agent into
+`~/Library/Application Support/Claude/claude-code/<version>/`. That copy is a
+single ~200 MB Bun-compiled Mach-O executable.
 
-## Requirements
+Some builds were compiled with AVX2 enabled. On a pre-Haswell CPU the process
+dies with `SIGILL` / `EXC_BAD_INSTRUCTION` while dyld is still running static
+initialisers, i.e. before `main()`, so there is no error message anywhere in the
+UI — just an app that never responds:
 
-- Claude Desktop installed and launched at least once, so it has created its local Claude Code bundle
-- Node.js and npm available on your shell `PATH`; [nvm](https://github.com/nvm-sh/nvm) works well, but is not strictly required
-- A user-writable global npm install location, because the script runs `npm install -g`
-- Xcode Command Line Tools (`clang`) to build the tiny Mach-O launcher
-- macOS `launchctl` and `plutil` for the optional auto-repatch helper; both are included with macOS
-
-The scripts perform preflight checks for these requirements and fail early with a clear error message when something is missing or not writable.
-
-### Installing requirements
-
-Claude Desktop:
-
-Download the macOS app from [claude.com/download](https://claude.com/download), move it to `/Applications`, sign in, and launch it once. This creates the local Claude Code bundle that the patch script modifies.
-
-Xcode Command Line Tools:
-
-```bash
-xcode-select --install
-clang --version
+```
+Exception Type:  EXC_BAD_INSTRUCTION (SIGILL)
+Termination:     Namespace SIGNAL, Code 4, Illegal instruction: 4
+Thread 0 Crashed:
+  0  claude.exe                      0x...
+  ...
+  3  dyld  invocation function for block in dyld4::Loader::findAndRunAllInitializers(...)
 ```
 
-Node.js and npm:
+Crash reports land in `~/Library/Logs/DiagnosticReports/claude.exe-*.ips`.
 
-Install Node.js with [nvm](https://github.com/nvm-sh/nvm#installing-and-updating), then open a new terminal and run:
+### Measured on a MacBookPro9,2 (Core i5-3210M, Ivy Bridge — AVX1, no AVX2)
 
-```bash
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-nvm install --lts
-nvm use --lts
-node -v
-npm -v
-```
+| Build | `claude --version` |
+| --- | --- |
+| `@anthropic-ai/claude-code@2.1.197` | **SIGILL, exit 132** |
+| `@anthropic-ai/claude-code@2.1.266` | runs |
+| `@anthropic-ai/claude-code@2.1.269` | runs |
+| Claude Desktop's bundled 2.1.266 | runs |
 
-User-writable npm global prefix:
+So the AVX2 requirement was dropped somewhere between those versions. If your
+Claude Desktop happens to ship an affected build, this script swaps in one that
+works; if it ships a healthy build, the script tells you so and exits without
+touching anything.
 
-```bash
-mkdir -p "$HOME/.local"
-npm config set prefix "$HOME/.local"
-export PATH="$HOME/.local/bin:$PATH"
-```
+## The fix
 
-Add the same `PATH` export to your shell profile (`~/.zshrc`, `~/.bashrc`, or `~/.bash_profile`) if `~/.local/bin` is not already on your `PATH`.
+`update-claude-desktop.sh` does, in order:
 
-Auto-repatch helper:
+1. Probes the binary Claude Desktop downloaded. If it runs, you are not
+   affected and nothing is changed.
+2. Otherwise it gets a working native build of the *same* Claude Code version
+   from npm, by pulling just the one executable out of the
+   `@anthropic-ai/claude-code-darwin-x64` tarball. It never runs
+   `npm install -g`, so your own `claude` CLI is left exactly as it is.
+3. If that build faults too, it tries the newest published build.
+4. As a last resort — for CPUs without even AVX1, where no native build can run
+   — it compiles a small Mach-O launcher that runs the JavaScript CLI
+   (`cli.js`) under Node.js.
 
-No extra install is needed for `launchctl` or `plutil`; both are included with macOS.
+Whatever it picks, it is verified by actually running it before anything is
+declared fixed. The result is installed in three places:
+
+- `~/Library/Application Support/Claude/claude-code-avx-fix/claude` — a stable
+  path that survives Desktop updates
+- `CLAUDE_CODE_LOCAL_BINARY`, set through `launchctl`, so Claude Desktop uses
+  that path
+- over the downloaded binary itself, as a fallback, with the original kept as
+  `claude.bun.bak`
+
+The copies are hard-linked, so the ~200 MB binary is stored once.
 
 ## Usage
 
-Use the `codex-fix-claude-sdk-cli-resolution` branch from this fork until the fixes are merged upstream:
-
-> **Important:** Run `./update-claude-desktop.sh` again after every Claude Desktop update. Claude Desktop downloads a fresh Claude Code binary during updates, so the AVX-compatible launcher must be re-applied.
-
 ```bash
-# First time
-git clone --branch codex-fix-claude-sdk-cli-resolution https://github.com/relecand/claude-desktop-avx-fix.git
+git clone https://github.com/SamuelSantos-R/claude-desktop-avx-fix.git
 cd claude-desktop-avx-fix
-chmod +x update-claude-desktop.sh
-./update-claude-desktop.sh
+chmod +x update-claude-desktop.sh install-auto-repatch.sh
+
+./update-claude-desktop.sh --check     # am I affected? changes nothing
+./update-claude-desktop.sh             # patch, if needed
 ```
 
-If you already cloned the repository, switch to the fix branch and update it:
+Then restart Claude Desktop.
+
+| Command | What it does |
+| --- | --- |
+| `--check` | Diagnose only. Exits 0 when there is nothing to do, 2 when the fix is needed. |
+| *(no flags)* | Patch, but only if the bundled binary actually faults. |
+| `--force` | Patch even when the bundled binary looks healthy. |
+| `--restore` | Put the original binary back, unset `CLAUDE_CODE_LOCAL_BINARY`, delete the override. |
+| `--pin X.Y.Z` | Use a specific `@anthropic-ai/claude-code` version instead of auto-selecting. |
+| `--help` | Usage. |
+
+### After a Claude Desktop update
+
+Claude Desktop downloads a fresh agent binary when it updates, which drops the
+patch. Re-run `./update-claude-desktop.sh` — or install the helper below and
+forget about it.
 
 ```bash
-git fetch origin
-git switch codex-fix-claude-sdk-cli-resolution
-git pull --ff-only
-./update-claude-desktop.sh
+./install-auto-repatch.sh              # install
+./install-auto-repatch.sh --uninstall  # remove
 ```
 
-After each Claude Desktop update, run the patch again:
+That installs a per-user LaunchAgent that watches Claude Desktop's `claude-code`
+directory, runs `--check` after an update, and re-patches only when the new
+binary is actually broken. It does not block Desktop updates and does not lock
+any app-managed file. Logs:
 
 ```bash
-./update-claude-desktop.sh
+tail -f ~/Library/Logs/claude-desktop-avx-fix.log
 ```
 
-## Automatic repatch after updates
+Keep this checkout in place — the LaunchAgent calls the script from here.
 
-Recommended: install the auto-repatch helper so you do not have to remember running the patch manually after each Claude Desktop update.
+## Requirements
 
-The helper installs a per-user macOS LaunchAgent. It runs after login and whenever Claude Desktop updates its local Claude Code bundle. It does not block Claude Desktop updates or lock any app-managed files; it simply re-applies `update-claude-desktop.sh` after the update lands.
+For the normal path, everything needed already ships with macOS:
 
-```bash
-chmod +x install-auto-repatch.sh
-./install-auto-repatch.sh
-```
+- macOS on Intel (`x86_64`); Apple Silicon Macs are not affected by this bug
+- Claude Desktop installed and launched at least once, so its Claude Code
+  bundle exists
+- `curl`, `tar`, `launchctl`
 
-The auto-repatcher writes logs to:
+Only the two optional extras need installing:
 
-```bash
-~/Library/Logs/claude-desktop-avx-fix.log
-```
-
-To remove the LaunchAgent:
-
-```bash
-./install-auto-repatch.sh --uninstall
-```
-
-Keep this repository checkout in place after installing the helper. The LaunchAgent calls `update-claude-desktop.sh` from this directory.
-
-## What it does
-
-1. Finds the latest version directory the desktop app created
-2. Reads the bundled `@anthropic-ai/claude-agent-sdk` version from your local Claude Desktop app
-3. Installs the matching SDK version via npm
-4. Falls back to the last known JS-CLI SDK build if the matching version no longer ships `cli.js`
-5. Compiles a small x86_64 Mach-O launcher that invokes Node.js and `cli.js`
-6. Installs a stable local override launcher under Claude's Application Support directory
-7. Sets `CLAUDE_CODE_LOCAL_BINARY` via `launchctl` so Claude Desktop can use that launcher
-8. Backs up and patches the downloaded native binary as a fallback
-9. Embeds the absolute Node.js path used to run `cli.js`, avoiding app-launch `PATH` issues
-10. In fallback mode, strips newer Desktop-only flags such as `--managed-settings`, `--assistant`, and `--channels` before launching the old JS CLI
-11. Restart the Claude desktop app to apply
-
-The optional `install-auto-repatch.sh` helper installs a user LaunchAgent that watches Claude Desktop's `claude-code` directory and re-runs this patch after updates. It does not block Claude Desktop updates or lock any app-managed files.
+- **Node.js and npm** — only for the Node.js fallback on CPUs without AVX1
+- **Xcode Command Line Tools** (`clang`) — only to build that fallback's
+  launcher: `xcode-select --install`
 
 ## Affected hardware
 
-Any Intel Mac with a CPU older than Haswell (4th gen, 2013) may be affected, because these CPUs do not support AVX2. Known affected model families include:
+Any Intel Mac older than Haswell (4th gen, 2013) lacks AVX2:
 
-- Mac Pro 4,1 (Early 2009) - Nehalem Xeon
-- Mac Pro 5,1 (Mid 2010/Mid 2012) - Westmere Xeon
-- Mac Pro 6,1 (Late 2013) - Ivy Bridge Xeon E5 v2
-- MacBook Pro 8,x (Early/Late 2011) - Sandy Bridge
-- MacBook Pro 9,x (Mid 2012), including MacBookPro9,1 - Ivy Bridge
-- MacBook Pro 10,x (Retina Mid 2012/Early 2013) - Ivy Bridge
-- MacBook Air 4,x (Mid 2011) - Sandy Bridge
-- MacBook Air 5,x (Mid 2012) - Ivy Bridge
-- iMac 12,x (Mid 2011) - Sandy Bridge
-- iMac 13,x (Late 2012/Early 2013) - Ivy Bridge
-- Mac mini 5,x (Mid 2011) - Sandy Bridge
-- Mac mini 6,x (Late 2012) - Ivy Bridge
+- Mac Pro 4,1 (Early 2009) — Nehalem Xeon
+- Mac Pro 5,1 (Mid 2010 / Mid 2012) — Westmere Xeon
+- Mac Pro 6,1 (Late 2013) — Ivy Bridge Xeon E5 v2
+- MacBook Pro 8,x (2011) — Sandy Bridge
+- MacBook Pro 9,x (Mid 2012) — Ivy Bridge
+- MacBook Pro 10,x (Retina 2012 / Early 2013) — Ivy Bridge
+- MacBook Air 4,x (Mid 2011) — Sandy Bridge
+- MacBook Air 5,x (Mid 2012) — Ivy Bridge
+- iMac 12,x (Mid 2011) — Sandy Bridge
+- iMac 13,x (Late 2012 / Early 2013) — Ivy Bridge
+- Mac mini 5,x (Mid 2011) — Sandy Bridge
+- Mac mini 6,x (Late 2012) — Ivy Bridge
 
-Older Intel Macs, such as Core 2 Duo MacBooks/MacBook Pros/MacBook Airs, iMac 10,x/11,x, and Mac mini 4,1, also lack AVX2. They may need additional OS-level patching and are less likely to run current Claude Desktop successfully, but the underlying AVX2 issue is the same.
+Haswell and newer (MacBookPro11,x, MacBookAir6,x, iMac14,x, Macmini7,1 and up)
+have AVX2 and should not need this.
 
-Haswell and newer Intel Macs usually support AVX2 and should not need this workaround. Examples that are normally outside the affected range include MacBookPro11,x and newer, MacBookAir6,x and newer, iMac14,x and newer, and Macmini7,1 and newer.
+Note that the npm `darwin-x64` build still requires **AVX1**. Core 2 Duo Macs
+(iMac 10,x/11,x, Mac mini 4,1, pre-2011 MacBooks) have neither AVX nor AVX2, so
+they land on the Node.js fallback — which needs Node.js and `clang`, and depends
+on an older agent SDK that still ships `cli.js`.
+
+## Check whether you are affected, by hand
+
+```bash
+sysctl -n machdep.cpu.leaf7_features | tr ' ' '\n' | grep -x AVX2 || echo "no AVX2"
+
+D="$HOME/Library/Application Support/Claude/claude-code"
+V=$(ls -1 "$D" | sort -V | tail -1)
+"$D/$V/claude.app/Contents/MacOS/claude" --version; echo "exit=$?"   # 132 = SIGILL
+```
+
+A stale `claude` CLI can cause the same crash independently of Desktop. If
+`claude --version` faults in your terminal, reinstall it:
+
+```bash
+npm install -g @anthropic-ai/claude-code@latest
+```
+
+## Credits
+
+Fork of [relecand/claude-desktop-avx-fix](https://github.com/relecand/claude-desktop-avx-fix).
+This fork adds the health probing, the `--check` / `--restore` modes, the
+npm-tarball binary source that no longer touches your global npm install, and
+keeps the original Node.js launcher as a fallback.
