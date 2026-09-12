@@ -67,6 +67,11 @@ touching anything.
    — it compiles a small Mach-O launcher that runs the JavaScript CLI
    (`cli.js`) under Node.js.
 
+Downloads are checked against the `sha512` the registry publishes in
+`dist.integrity` before the tarball is unpacked; a mismatch aborts instead of
+installing. The check uses the `openssl` that ships with macOS, so it needs
+nothing extra. If the registry serves no hash, the run warns and continues.
+
 Whatever it picks, it is verified by actually running it before anything is
 declared fixed. The result is installed in three places:
 
@@ -78,6 +83,27 @@ declared fixed. The result is installed in three places:
   `claude.bun.bak`
 
 The copies are hard-linked, so the ~200 MB binary is stored once.
+
+### Code signature
+
+Replacing the executable inside `claude.app` invalidates the bundle's
+signature, so `codesign --verify` and `spctl` both reject the bundle
+afterwards:
+
+```
+claude.app: code has no resources but signature indicates they must be present
+```
+
+The binary that goes in is itself properly signed — `Developer ID Application:
+Anthropic PBC (Q6L2SF6YDW)`, chaining to the Apple Root CA — so this is not
+unsigned code; it is an authentic binary inside a wrapper whose signature no
+longer closes. Claude Desktop launches the agent as a child process rather than
+through LaunchServices, so Gatekeeper does not gate it in practice.
+
+The script reports this in `--check` rather than repairing it. Re-signing
+ad-hoc (`codesign -f -s -`) would replace Anthropic's Developer ID with an
+anonymous signature and can drop entitlements — a worse trade than a bundle
+that Gatekeeper never inspects. `--restore` puts the signed original back.
 
 ## Usage
 

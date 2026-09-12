@@ -88,9 +88,25 @@ timestamp() {
     date "+%Y-%m-%d %H:%M:%S"
 }
 
+# A run killed before its EXIT trap (reboot, kill -9, logout mid-patch) leaves
+# the lock behind. Without an age check that lock is permanent, and every later
+# run skips while reporting "already running" — the watcher goes quiet forever
+# and nothing says so. A patch run is minutes at worst, so an hour is generous.
+LOCK_MAX_AGE=3600
+
 if ! mkdir "\$LOCK_DIR" 2>/dev/null; then
-    echo "[\$(timestamp)] auto-repatch already running; skipping"
-    exit 0
+    lock_mtime=\$(stat -f %m "\$LOCK_DIR" 2>/dev/null || echo 0)
+    lock_age=\$(( \$(date +%s) - lock_mtime ))
+    if [ "\$lock_mtime" -gt 0 ] && [ "\$lock_age" -lt "\$LOCK_MAX_AGE" ]; then
+        echo "[\$(timestamp)] auto-repatch already running (lock \${lock_age}s old); skipping"
+        exit 0
+    fi
+    echo "[\$(timestamp)] stale lock (\${lock_age}s old); reclaiming"
+    rmdir "\$LOCK_DIR" 2>/dev/null || true
+    if ! mkdir "\$LOCK_DIR" 2>/dev/null; then
+        echo "[\$(timestamp)] could not acquire lock; skipping"
+        exit 0
+    fi
 fi
 
 cleanup() {

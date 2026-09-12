@@ -170,7 +170,25 @@ desktop_claude_code_version() {
     ls -1 "$CLAUDE_CODE_DIR" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
 }
 
+app_bundle_for()        { printf '%s/%s/claude.app\n' "$CLAUDE_CODE_DIR" "$1"; }
 app_binary_for()        { printf '%s/%s/claude.app/Contents/MacOS/claude\n' "$CLAUDE_CODE_DIR" "$1"; }
+
+# Replacing the executable inside claude.app invalidates the bundle signature.
+# Reported rather than repaired on purpose: re-signing ad-hoc (codesign -f -s -)
+# would swap Anthropic's Developer ID for an anonymous signature and can drop
+# entitlements, which is a worse trade than a bundle Gatekeeper still admits.
+signature_state() {
+    local bundle="$1"
+    [ -d "$bundle" ] || { printf 'no bundle'; return; }
+    command -v codesign >/dev/null 2>&1 || { printf 'unknown (codesign unavailable)'; return; }
+    if codesign --verify --deep --strict "$bundle" >/dev/null 2>&1; then
+        printf 'valid'
+    elif command -v spctl >/dev/null 2>&1 && spctl -a -t exec "$bundle" >/dev/null 2>&1; then
+        printf 'invalidated by the patch (Gatekeeper still accepts it)'
+    else
+        printf 'invalidated by the patch (Gatekeeper REJECTS it)'
+    fi
+}
 standalone_binary_for() { printf '%s/%s/claude\n' "$CLAUDE_CODE_DIR" "$1"; }
 verified_marker_for()   { printf '%s/%s/.verified\n' "$CLAUDE_CODE_DIR" "$1"; }
 
@@ -240,6 +258,34 @@ registry_latest_version() {
         sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
 }
 
+# npm publishes dist.integrity as "sha512-<base64>" for every version. We are
+# about to run this binary, so check it against what the registry claims.
+registry_integrity() {
+    local pkg="$1" version="$2"
+    curl -fsSL "$REGISTRY/$pkg/$version" 2>/dev/null |
+        sed -n 's/.*"integrity":[[:space:]]*"\(sha512-[^"]*\)".*/\1/p' | head -1
+}
+
+tarball_sha512_base64() {
+    # LibreSSL ships with macOS, so this needs nothing installed.
+    openssl dgst -sha512 -binary "$1" 2>/dev/null | openssl base64 -A 2>/dev/null
+}
+
+# 0 = matches, 1 = MISMATCH (caller must abort), 2 = could not check.
+verify_tarball_integrity() {
+    local tarball="$1" expected="$2" actual
+
+    case "$expected" in
+        sha512-?*) ;;
+        *) return 2 ;;
+    esac
+    command -v openssl >/dev/null 2>&1 || return 2
+
+    actual="$(tarball_sha512_base64 "$tarball")"
+    [ -n "$actual" ] || return 2
+    [ "$actual" = "${expected#sha512-}" ]
+}
+
 version_published() {
     local url http
     url="$(tarball_url "$(platform_package)" "$1")"
@@ -268,6 +314,22 @@ download_native_binary() {
         return 1
     fi
     mv "$tarball.part" "$tarball"
+
+    # Verify before unpacking: this binary is about to be executed and installed
+    # as the agent Claude Desktop runs. A tampered tarball must not get that far.
+    local expected integrity_status=0
+    expected="$(registry_integrity "$pkg" "$version")"
+    verify_tarball_integrity "$tarball" "$expected" || integrity_status=$?
+    case "$integrity_status" in
+        0) log "Integrity OK (sha512 matches the registry)" ;;
+        1)
+            rm -f "$tarball"
+            error "Integrity check FAILED for $pkg@$version. The download does not match the sha512 the registry published. Refusing to install it."
+            ;;
+        *)
+            warn "Could not verify integrity of $pkg@$version (no sha512 from the registry, or openssl unavailable). Continuing."
+            ;;
+    esac
 
     if ! tar -xzOf "$tarball" package/claude > "$destination.part" 2>/dev/null; then
         rm -f "$destination.part" "$tarball"
@@ -524,6 +586,7 @@ do_check() {
     log "  Claude Code:  $DESKTOP_VERSION"
     log "  Binary:       $app_binary"
     log "  Patched:      $patched"
+    log "  Signature:    $(signature_state "$(app_bundle_for "$DESKTOP_VERSION")")"
 
     pristine="$(pristine_binary_for "$DESKTOP_VERSION" || true)"
     if [ -n "$pristine" ]; then
@@ -563,7 +626,20 @@ do_check() {
     elif [ -n "$pristine" ] && [ "$pristine_status" -eq 0 ]; then
         log "  This machine is NOT affected: the bundled build runs fine."
         if [ "$patched" = "yes" ] || [ -f "$OVERRIDE_BINARY" ]; then
-            log "  The fix is still installed and now pins an older build."
+            # Do not assume the override is older than the bundle: the fix may
+            # well have pulled a newer build than the one Desktop ships.
+            local override_version="" newest
+            [ -f "$OVERRIDE_BINARY" ] && override_version="$(binary_version "$OVERRIDE_BINARY")"
+            if [ -z "$override_version" ] || [ "$override_version" = "$DESKTOP_VERSION" ]; then
+                log "  The fix is still installed and pins the same build as the bundle."
+            else
+                newest="$(printf '%s\n%s\n' "$override_version" "$DESKTOP_VERSION" | sort -V | tail -1)"
+                if [ "$newest" = "$DESKTOP_VERSION" ]; then
+                    log "  The fix is still installed and pins an older build ($override_version, bundle has $DESKTOP_VERSION)."
+                else
+                    log "  The fix is still installed and pins a newer build ($override_version, bundle has $DESKTOP_VERSION)."
+                fi
+            fi
             log "  Run ./$SCRIPT_NAME --restore to hand Claude Desktop back its own binary."
         fi
     else
